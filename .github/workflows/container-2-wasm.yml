@@ -1,0 +1,68 @@
+name: Container to WASM Conversion
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'run_conversion.sh'
+      - 'docker-compose.yml'
+      - '.github/workflows/container-to-wasm.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+
+jobs:
+  discover-projects:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Discover Projects in src/
+        id: set-matrix
+        run: |
+          projects=$(find src -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix={\"project\": $projects}" >> $GITHUB_OUTPUT
+
+  convert-projects:
+    needs: discover-projects
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.discover-projects.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set Up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Start Docker Compose (if present)
+        run: |
+          if [ -f docker-compose.yml ]; then
+            docker-compose up -d
+          fi
+
+      - name: Run Conversion for ${{ matrix.project }}
+        run: |
+          project_dir="src/${{ matrix.project }}"
+          echo "Converting project: $project_dir"
+          ./run_conversion.sh "$project_dir"
+
+      - name: Upload WASM Artifacts
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: wasm-${{ matrix.project }}
+          path: |
+            ${{ matrix.project }}/output/*.wasm
+            ${{ matrix.project }}/output/**/*.wasm
+
+      - name: Stop Docker Compose (if running)
+        if: always() && exists('docker-compose.yml')
+        run: |
+          docker-compose down
